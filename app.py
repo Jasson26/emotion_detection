@@ -27,9 +27,6 @@ if not EMOTION_MODEL_URL:
 EMOTION_MODEL_LOCAL = Path(tempfile.gettempdir()) / "emotion_resnet18_best.pth"
 
 
-# ===============================
-# LOAD MODEL
-# ===============================
 @st.cache_resource
 def get_model():
     EMOTION_MODEL_LOCAL.parent.mkdir(parents=True, exist_ok=True)
@@ -46,33 +43,17 @@ def get_model():
     return load_emotion_model(str(EMOTION_MODEL_LOCAL))
 
 
-def bgr_to_rgb_for_streamlit(img_bgr):
-    if img_bgr is None:
-        raise ValueError("Output image is None")
-
-    if not isinstance(img_bgr, np.ndarray):
-        raise TypeError(f"Output image is not np.ndarray (type={type(img_bgr)})")
-
-    if img_bgr.size == 0:
-        raise ValueError("Output image is empty (size=0)")
-
+def bgr_to_rgb_uint8(img_bgr):
+    if img_bgr is None or not isinstance(img_bgr, np.ndarray) or img_bgr.size == 0:
+        raise ValueError("Output image invalid")
     if img_bgr.ndim == 2:
         img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
-
     if img_bgr.ndim != 3:
-        raise ValueError(f"Invalid ndim={img_bgr.ndim}, shape={img_bgr.shape}")
-
-    h, w, c = img_bgr.shape
-    if c == 4:
+        raise ValueError(f"Invalid shape: {img_bgr.shape}")
+    if img_bgr.shape[2] == 4:
         img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_BGRA2BGR)
-    elif c == 1:
-        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
-    elif c != 3:
-        raise ValueError(f"Invalid channels={c}, shape={img_bgr.shape}")
-
     if img_bgr.dtype != np.uint8:
         img_bgr = np.clip(img_bgr, 0, 255).astype(np.uint8)
-
     return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
 
@@ -81,14 +62,22 @@ def bgr_to_rgb_for_streamlit(img_bgr):
 # ===============================
 st.set_page_config(page_title="Emotion Recognition", layout="centered")
 st.title("🎭 Facial Emotion Recognition")
-st.write("Upload foto atau ambil snapshot")
+st.write("Upload foto atau ambil snapshot (kamera).")
 
 conf_thresh = st.slider(
-    "Face detection confidence threshold",
+    "Face detection confidence threshold (lebih kecil = lebih sensitif)",
     min_value=0.1,
     max_value=0.9,
-    value=0.5,
+    value=0.3,     # default lebih sensitif
     step=0.05
+)
+
+det_scale = st.slider(
+    "Detection upscale (membantu deteksi wajah)",
+    min_value=1.0,
+    max_value=2.0,
+    value=1.5,
+    step=0.1
 )
 
 model = get_model()
@@ -110,26 +99,20 @@ else:
 
     try:
         img_bgr_out, results = predict_emotions_on_image_bgr(
-            model, img_bgr, conf_threshold=conf_thresh
+            model, img_bgr,
+            conf_threshold=conf_thresh,
+            det_scale=float(det_scale)
         )
     except Exception as e:
-        st.error(f"Gagal saat predict_emotions_on_image_bgr: {e}")
+        st.error(f"Gagal saat prediksi: {type(e).__name__}: {e}")
         st.stop()
 
     try:
-        img_rgb_out = bgr_to_rgb_for_streamlit(img_bgr_out)
+        img_rgb_out = bgr_to_rgb_uint8(img_bgr_out)
         st.subheader("✅ Hasil Deteksi")
-        # kompatibel streamlit lama:
-        st.image(img_rgb_out, use_column_width=True)
+        st.image(img_rgb_out, use_column_width=True)  # kompatibel streamlit lama
     except Exception as e:
-        st.error("Output image dari model tidak bisa ditampilkan.")
-        st.code(f"{type(e).__name__}: {e}")
-        st.write("DEBUG output:")
-        st.write("type:", type(img_bgr_out))
-        if isinstance(img_bgr_out, np.ndarray):
-            st.write("shape:", img_bgr_out.shape)
-            st.write("dtype:", img_bgr_out.dtype)
-            st.write("min/max:", float(np.min(img_bgr_out)), float(np.max(img_bgr_out)))
+        st.error(f"Gambar output tidak bisa ditampilkan: {type(e).__name__}: {e}")
         st.stop()
 
     if not results:
@@ -137,4 +120,15 @@ else:
     else:
         st.markdown("### Detail Prediksi")
         for i, r in enumerate(results, 1):
-            st.write(f"Wajah {i}: **{r.get('label','?')}** ({float(r.get('confidence',0))*100:.1f}%)")
+            used_fallback = r.get("used_fallback", False)
+            extra = " (fallback crop)" if used_fallback else ""
+            st.write(
+                f"Wajah {i}: **{r.get('label','?')}** "
+                f"({float(r.get('confidence',0))*100:.1f}%)"
+                f"{extra}"
+            )
+            # Debug kecil (optional)
+            st.caption(
+                f"FaceDetConf={float(r.get('face_det_conf',0)):.3f} | "
+                f"MaxDetConfSeen={float(r.get('debug_max_face_conf',0)):.3f}"
+            )
