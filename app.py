@@ -30,12 +30,11 @@ EMOTION_MODEL_LOCAL = Path(tempfile.gettempdir()) / "emotion_resnet18_best.pth"
 
 @st.cache_resource
 def get_model():
-    
     EMOTION_MODEL_LOCAL.parent.mkdir(parents=True, exist_ok=True)
 
-    
+   
     if (not EMOTION_MODEL_LOCAL.exists()) or EMOTION_MODEL_LOCAL.stat().st_size == 0:
-        with st.spinner("Downloading emotion model "):
+        with st.spinner("Downloading emotion model (.pth)..."):
             r = requests.get(EMOTION_MODEL_URL, stream=True, timeout=180)
             r.raise_for_status()
             with open(EMOTION_MODEL_LOCAL, "wb") as f:
@@ -43,13 +42,48 @@ def get_model():
                     if chunk:
                         f.write(chunk)
 
-    
     return load_emotion_model(str(EMOTION_MODEL_LOCAL))
+
+
+def bgr_to_rgb_for_streamlit(img_bgr):
+  
+    if img_bgr is None:
+        raise ValueError("Output image is None")
+
+    if not isinstance(img_bgr, np.ndarray):
+        raise TypeError(f"Output image is not np.ndarray (type={type(img_bgr)})")
+
+    if img_bgr.size == 0:
+        raise ValueError("Output image is empty (size=0)")
+
+    
+    if img_bgr.ndim == 2:
+        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
+
+    
+    if img_bgr.ndim != 3:
+        raise ValueError(f"Output image has invalid ndim={img_bgr.ndim}, shape={img_bgr.shape}")
+
+    h, w, c = img_bgr.shape
+    if c == 4:
+        
+        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_BGRA2BGR)
+    elif c == 1:
+        img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
+    elif c != 3:
+        raise ValueError(f"Output image has invalid channels={c}, shape={img_bgr.shape}")
+
+    
+    if img_bgr.dtype != np.uint8:
+        img_bgr = np.clip(img_bgr, 0, 255).astype(np.uint8)
+
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    return img_rgb
 
 
 
 st.set_page_config(page_title="Emotion Recognition", layout="centered")
-st.title("🎭 Facial Emotion Recognition")
+st.title(" Facial Emotion Recognition")
 st.write("Upload foto atau ambil snapshot")
 
 conf_thresh = st.slider(
@@ -74,22 +108,40 @@ image_source = camera_image if camera_image is not None else uploaded_file
 if image_source is None:
     st.info("Silakan upload gambar atau ambil foto.")
 else:
+    
     image = Image.open(image_source).convert("RGB")
     img_rgb = np.array(image)
     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
 
-    img_bgr_out, results = predict_emotions_on_image_bgr(
-        model, img_bgr, conf_threshold=conf_thresh
-    )
+    
+    try:
+        img_bgr_out, results = predict_emotions_on_image_bgr(
+            model, img_bgr, conf_threshold=conf_thresh
+        )
+    except Exception as e:
+        st.error(f"Gagal saat predict_emotions_on_image_bgr: {e}")
+        st.stop()
 
-    img_rgb_out = cv2.cvtColor(img_bgr_out, cv2.COLOR_BGR2RGB)
+    
+    try:
+        img_rgb_out = bgr_to_rgb_for_streamlit(img_bgr_out)
+        st.subheader(" Hasil Deteksi")
+        st.image(img_rgb_out, use_container_width=True)
+    except Exception as e:
+        st.error("Output image dari model tidak bisa ditampilkan.")
+        st.code(f"{type(e).__name__}: {e}")
+        st.write("DEBUG output:")
+        st.write("type:", type(img_bgr_out))
+        if isinstance(img_bgr_out, np.ndarray):
+            st.write("shape:", img_bgr_out.shape)
+            st.write("dtype:", img_bgr_out.dtype)
+            st.write("min/max:", float(np.min(img_bgr_out)), float(np.max(img_bgr_out)))
+        st.stop()
 
-    st.subheader(" Hasil Deteksi")
-    st.image(img_rgb_out, use_container_width=True)
-
+    
     if not results:
         st.warning("Tidak ada wajah terdeteksi.")
     else:
-        st.markdown(" Detail Prediksi")
+        st.markdown("### Detail Prediksi")
         for i, r in enumerate(results, 1):
-            st.write(f"Wajah {i}: **{r['label']}** ({r['confidence']*100:.1f}%)")
+            st.write(f"Wajah {i}: **{r.get('label','?')}** ({float(r.get('confidence',0))*100:.1f}%)")
